@@ -49,15 +49,25 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios
+          components: rust-src
 
       - name: Verify iOS target is installed
         run: |
           set -euo pipefail
+          echo "--- which rustc/cargo ---"
+          which rustc cargo rustup
+          echo "--- active toolchain ---"
+          rustup show
+          echo "--- installed targets ---"
           rustup target list --installed
           # Belt-and-suspenders: dtolnay/rust-toolchain sometimes installs the
           # target under a different toolchain than the one cargo resolves to.
           # Force it on the active default so `cargo build --target` finds `core`.
           rustup target add aarch64-apple-ios
+          echo "--- after explicit add ---"
+          rustup target list --installed
+          # This MUST print a real path under ~/.rustup/toolchains/.../lib/rustlib/aarch64-apple-ios/lib
+          # If it errors, the target std is genuinely missing and cargo will fail with E0463.
           rustc --print target-libdir --target aarch64-apple-ios
 
       - name: Install ldid (for ad-hoc signing)
@@ -129,6 +139,15 @@ jobs:
         working-directory: codex-src/codex-rs
         run: |
           set -euo pipefail
+          echo "--- cargo/rustc in build step ---"
+          which cargo rustc
+          cargo --version
+          rustc --version
+          echo "--- target-libdir for aarch64-apple-ios ---"
+          rustc --print target-libdir --target aarch64-apple-ios || true
+          echo "--- RUSTUP_HOME / CARGO_HOME ---"
+          echo "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}"
+          echo "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}"
           cargo build \
             --target aarch64-apple-ios \
             --release \
