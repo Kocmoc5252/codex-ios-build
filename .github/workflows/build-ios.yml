@@ -1,0 +1,178 @@
+name: Build Codex iOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-ios.yml
+      - patches/**
+      - entitlements.xml
+
+# Free for public repos. For private repos these minutes count against
+# your monthly allowance; a release build of codex is ~30-50 min on a
+# macos-15 runner.
+concurrency:
+  group: build-ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: codex aarch64-apple-ios
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout this repo (workflow + patches)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout openai/codex at rust-v0.142.3
+        uses: actions/checkout@v4
+        with:
+          repository: openai/codex
+          ref: rust-v0.142.3
+          path: codex-src
+          persist-credentials: false
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          # Pick the latest Xcode available on the runner.
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)" || true
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Install Rust + iOS target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Install ldid (for ad-hoc signing)
+        run: |
+          set -euo pipefail
+          if ! command -v ldid >/dev/null 2>&1; then
+            brew install ldid
+          fi
+          ldid 2>&1 | head -1 || true
+
+      - name: Apply iOS patches
+        working-directory: codex-src
+        run: |
+          set -euo pipefail
+          for p in ../patches/*.patch; do
+            echo "=== applying $p ==="
+            git apply --verbose "$p"
+          done
+          echo "--- patched files ---"
+          git diff --stat || true
+
+      - name: Configure iOS toolchain env
+        run: |
+          set -euo pipefail
+          # iOS deployment target matches the device (iOS 16.1).
+          echo "IPHONEOS_DEPLOYMENT_TARGET=16.0" >> "$GITHUB_ENV"
+
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          echo "IOS_SDK=$SDK" >> "$GITHUB_ENV"
+
+          CC="$(xcrun --sdk iphoneos --find clang)"
+          CXX="$(xcrun --sdk iphoneos --find clang++)"
+          AR="$(xcrun --sdk iphoneos --find ar)"
+          echo "CC_aarch64_apple_ios=$CC"        >> "$GITHUB_ENV"
+          echo "CXX_aarch64_apple_ios=$CXX"      >> "$GITHUB_ENV"
+          echo "AR_aarch64_apple_ios=$AR"        >> "$GITHUB_ENV"
+          # aws-lc-sys reads these underscored variants too.
+          echo "CC_aarch64-apple-ios=$CC"        >> "$GITHUB_ENV"
+          echo "CXX_aarch64-apple-ios=$CXX"      >> "$GITHUB_ENV"
+          echo "AR_aarch64-apple-ios=$AR"        >> "$GITHUB_ENV"
+
+          # aws-lc jitter entropy is problematic on cross builds; the
+          # official musl build disables it the same way.
+          echo "AWS_LC_SYS_NO_JITTER_ENTROPY=1" >> "$GITHUB_ENV"
+          echo "AWS_LC_SYS_NO_JITTER_ENTROPY_aarch64_apple_ios=1" >> "$GITHUB_ENV"
+
+          # Linker flags: -ObjC for objc2 categories, isysroot to point at
+          # the iOS SDK (cargo's default linker driver needs this for cross).
+          echo "RUSTFLAGS=-C link-arg=-ObjC -C link-arg=-isysroot -C link-arg=$SDK -C link-arg=-platform_version -C link-arg=ios -C link-arg=16.0 -C link-arg=16.0" >> "$GITHUB_ENV"
+          echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
+
+      - name: Generate CMake toolchain file for aws-lc-sys
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/ios-toolchain.cmake" <<EOF
+          set(CMAKE_SYSTEM_NAME iOS)
+          set(CMAKE_SYSTEM_PROCESSOR aarch64)
+          set(CMAKE_C_COMPILER "$CC_aarch64_apple_ios")
+          set(CMAKE_CXX_COMPILER "$CXX_aarch64_apple_ios")
+          set(CMAKE_AR "$AR_aarch64_apple_ios")
+          set(CMAKE_OSX_SYSROOT "$IOS_SDK")
+          set(CMAKE_OSX_DEPLOYMENT_TARGET "16.0")
+          set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+          EOF
+          echo "CMAKE_TOOLCHAIN_FILE=$RUNNER_TEMP/ios-toolchain.cmake" >> "$GITHUB_ENV"
+          cat "$RUNNER_TEMP/ios-toolchain.cmake"
+
+      - name: Cargo build (codex, aarch64-apple-ios, release)
+        working-directory: codex-src/codex-rs
+        run: |
+          set -euo pipefail
+          cargo build \
+            --target aarch64-apple-ios \
+            --release \
+            --bin codex
+
+      - name: Locate + strip binary
+        id: bin
+        run: |
+          set -euo pipefail
+          BIN="codex-src/codex-rs/target/aarch64-apple-ios/release/codex"
+          ls -la "$BIN"
+          echo "path=$BIN" >> "$GITHUB_OUTPUT"
+
+          # Strip debug symbols (we are not packaging a dSYM for iOS).
+          xcrun --sdk iphoneos --find strip || true
+          strip -x "$BIN" || true
+          ls -la "$BIN"
+
+      - name: Ad-hoc sign with ldid + entitlements
+        run: |
+          set -euo pipefail
+          BIN="${{ steps.bin.outputs.path }}"
+          ldid -S"$GITHUB_WORKSPACE/entitlements.xml" "$BIN"
+          # Verify a signature blob is present.
+          ldid -d "$BIN" >/dev/null && echo "ldid: signature present"
+
+      - name: Inspect Mach-O (sanity)
+        run: |
+          set -euo pipefail
+          BIN="${{ steps.bin.outputs.path }}"
+          file "$BIN"
+          echo "--- LC_BUILD_VERSION (expect platform 7 = iOS, minos 16.0) ---"
+          otool -l "$BIN" | grep -A4 "LC_BUILD_VERSION" || true
+          echo "--- linked libraries ---"
+          otool -L "$BIN" | head -30
+
+      - name: Package artifact
+        run: |
+          set -euo pipefail
+          BIN="${{ steps.bin.outputs.path }}"
+          STAGE="$RUNNER_TEMP/stage"
+          mkdir -p "$STAGE"
+          cp "$BIN" "$STAGE/codex"
+          cp "$GITHUB_WORKSPACE/entitlements.xml" "$STAGE/entitlements.xml"
+          (cd "$STAGE" && shasum -a 256 codex entitlements.xml > SHA256SUMS)
+          cat "$STAGE/SHA256SUMS"
+          tar -czf "$RUNNER_TEMP/codex-aarch64-apple-ios.tar.gz" -C "$STAGE" codex entitlements.xml SHA256SUMS
+          ls -la "$RUNNER_TEMP/codex-aarch64-apple-ios.tar.gz"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-aarch64-apple-ios
+          path: |
+            ${{ runner.temp }}/codex-aarch64-apple-ios.tar.gz
+          retention-days: 14
+          if-no-files-found: error

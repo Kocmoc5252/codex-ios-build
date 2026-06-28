@@ -1,0 +1,21 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: iOS jailbreak packaging
+Date: Fri, 28 Jun 2026 00:00:00 +0000
+Subject: [PATCH] cli/build.rs: emit -ObjC on iOS too
+
+The `-ObjC` linker flag is needed so the objc2 categories from
+`objc2-*` crates link correctly. Upstream only emits it under
+`target_os = "macos"`, but the same flag is required for the
+`aarch64-apple-ios` build.
+
+diff --git a/codex-rs/cli/build.rs b/codex-rs/cli/build.rs
+--- a/codex-rs/cli/build.rs
++++ b/codex-rs/cli/build.rs
+@@ -1,5 +1,6 @@
+ fn main() {
+-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
++    let target_os = std::env::var("CARGO_CFG_TARGET_OS").as_deref();
++    if target_os == Ok("macos") || target_os == Ok("ios") {
+         println!("cargo:rustc-link-arg=-ObjC");
+     }
+ }
