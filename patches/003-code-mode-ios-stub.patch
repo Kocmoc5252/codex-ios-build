@@ -1,0 +1,224 @@
+From 2fbb535b14ccd3ec22b4bb9530edc5180cf7562b Mon Sep 17 00:00:00 2001
+From: ios <ios@local>
+Date: Sun, 28 Jun 2026 21:14:17 +0300
+Subject: [PATCH] code-mode: iOS stub (no v8)
+
+---
+ codex-rs/code-mode/Cargo.toml         |   9 +-
+ codex-rs/code-mode/src/lib.rs         |  32 ++++++-
+ codex-rs/code-mode/src/service_ios.rs | 126 ++++++++++++++++++++++++++
+ 3 files changed, 165 insertions(+), 2 deletions(-)
+ create mode 100644 codex-rs/code-mode/src/service_ios.rs
+
+diff --git a/codex-rs/code-mode/Cargo.toml b/codex-rs/code-mode/Cargo.toml
+index 09f1d73..252b7b7 100644
+--- a/codex-rs/code-mode/Cargo.toml
++++ b/codex-rs/code-mode/Cargo.toml
+@@ -10,6 +10,7 @@ name = "codex_code_mode"
+ path = "src/lib.rs"
+ 
+ [features]
++# `sandbox` requires v8 and is only meaningful on non-iOS targets.
+ sandbox = ["v8/v8_enable_sandbox"]
+ 
+ [lints]
+@@ -18,12 +19,18 @@ workspace = true
+ [dependencies]
+ codex-code-mode-protocol = { workspace = true }
+ codex-protocol = { workspace = true }
+-deno_core_icudata = { workspace = true }
+ serde_json = { workspace = true }
+ tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+ tokio-util = { workspace = true, features = ["rt"] }
+ tracing = { workspace = true }
++
++# v8 / ICU data drive the in-process JS runtime. rusty_v8 has no prebuilt
++# static lib for `aarch64-apple-ios`, so the real runtime modules are compiled
++# only on non-iOS targets. On iOS a stub `service` module is compiled instead
++# (see src/lib.rs), so these deps must not be linked on iOS.
++[target.'cfg(not(target_os = "ios"))'.dependencies]
+ v8 = { workspace = true }
++deno_core_icudata = { workspace = true }
+ 
+ [dev-dependencies]
+ pretty_assertions = { workspace = true }
+diff --git a/codex-rs/code-mode/src/lib.rs b/codex-rs/code-mode/src/lib.rs
+index cbe8bfe..baa2a92 100644
+--- a/codex-rs/code-mode/src/lib.rs
++++ b/codex-rs/code-mode/src/lib.rs
+@@ -1,9 +1,39 @@
++// The real code-mode runtime (cell_actor / runtime / session_runtime / service)
++// embeds V8 via the `v8` crate. rusty_v8 does not publish a prebuilt static
++// library for `aarch64-apple-ios`, so those modules cannot compile on iOS.
++// On iOS we compile a stub `service` module instead: it re-exports the
++// protocol types and provides no-op / error-returning implementations of the
++// service items that `codex-core` and `codex-tools` import. Code mode is a
++// runtime tool feature; the rest of the `codex` binary works without it.
++
++#[cfg(not(target_os = "ios"))]
+ mod cell_actor;
++#[cfg(not(target_os = "ios"))]
+ mod runtime;
++#[cfg(not(target_os = "ios"))]
+ mod service;
++#[cfg(not(target_os = "ios"))]
+ mod session_runtime;
+ 
+-pub use codex_code_mode_protocol::*;
++#[cfg(not(target_os = "ios"))]
+ pub use service::CodeModeService;
++#[cfg(not(target_os = "ios"))]
+ pub use service::InProcessCodeModeSessionProvider;
++#[cfg(not(target_os = "ios"))]
+ pub use service::NoopCodeModeSessionDelegate;
++
++#[cfg(target_os = "ios")]
++mod service_ios;
++
++#[cfg(target_os = "ios")]
++pub use service_ios::CodeModeService;
++#[cfg(target_os = "ios")]
++pub use service_ios::InProcessCodeModeSessionProvider;
++#[cfg(target_os = "ios")]
++pub use service_ios::NoopCodeModeSessionDelegate;
++
++// The protocol types (CellId, CodeModeSession, RuntimeResponse, tool
++// descriptions, constants PUBLIC_TOOL_NAME / WAIT_TOOL_NAME /
++// DEFAULT_WAIT_YIELD_TIME_MS, etc.) are target-independent and are always
++// re-exported so that `codex-core` / `codex-tools` compile unchanged on iOS.
++pub use codex_code_mode_protocol::*;
+diff --git a/codex-rs/code-mode/src/service_ios.rs b/codex-rs/code-mode/src/service_ios.rs
+new file mode 100644
+index 0000000..4b351ad
+--- /dev/null
++++ b/codex-rs/code-mode/src/service_ios.rs
+@@ -0,0 +1,126 @@
++//! iOS stub for the code-mode service.
++//!
++//! V8 is not available on `aarch64-apple-ios` (rusty_v8 has no prebuilt for
++//! that target), so the real in-process JS runtime cannot be linked. This
++//! module provides the same public surface (`CodeModeService`,
++//! `InProcessCodeModeSessionProvider`, `NoopCodeModeSessionDelegate`) with
++//! implementations that report code mode as unavailable. The protocol types
++//! are re-exported from the crate root and remain fully available, so the
++//! rest of the `codex` binary compiles and runs; only the `exec` / `wait`
++//! code-mode tools are non-functional on iOS.
++
++use std::sync::Arc;
++
++use codex_code_mode_protocol::CellId;
++use codex_code_mode_protocol::CodeModeNestedToolCall;
++use codex_code_mode_protocol::CodeModeSession;
++use codex_code_mode_protocol::CodeModeSessionDelegate;
++use codex_code_mode_protocol::CodeModeSessionProvider;
++use codex_code_mode_protocol::CodeModeSessionProviderFuture;
++use codex_code_mode_protocol::CodeModeSessionResultFuture;
++use codex_code_mode_protocol::ExecuteRequest;
++use codex_code_mode_protocol::NotificationFuture;
++use codex_code_mode_protocol::StartedCell;
++use codex_code_mode_protocol::ToolInvocationFuture;
++use codex_code_mode_protocol::WaitOutcome;
++use codex_code_mode_protocol::WaitRequest;
++use tokio_util::sync::CancellationToken;
++
++const UNAVAILABLE: &str = "code mode is unavailable on iOS";
++
++/// Delegate whose nested-tool invocations always fail. Mirrors the real
++/// `NoopCodeModeSessionDelegate` surface used by `codex-core`.
++pub struct NoopCodeModeSessionDelegate;
++
++impl CodeModeSessionDelegate for NoopCodeModeSessionDelegate {
++    fn invoke_tool<'a>(
++        &'a self,
++        _invocation: CodeModeNestedToolCall,
++        cancellation_token: CancellationToken,
++    ) -> ToolInvocationFuture<'a> {
++        Box::pin(async move {
++            cancellation_token.cancelled().await;
++            Err(UNAVAILABLE.to_string())
++        })
++    }
++
++    fn notify<'a>(
++        &'a self,
++        _call_id: String,
++        _cell_id: CellId,
++        _text: String,
++        _cancellation_token: CancellationToken,
++    ) -> NotificationFuture<'a> {
++        Box::pin(async { Ok(()) })
++    }
++
++    fn cell_closed(&self, _cell_id: &CellId) {}
++}
++
++/// Provider that hands out stub sessions. Mirrors the real
++/// `InProcessCodeModeSessionProvider` surface.
++#[derive(Default)]
++pub struct InProcessCodeModeSessionProvider;
++
++impl CodeModeSessionProvider for InProcessCodeModeSessionProvider {
++    fn create_session<'a>(
++        &'a self,
++        _delegate: Arc<dyn CodeModeSessionDelegate>,
++    ) -> CodeModeSessionProviderFuture<'a> {
++        Box::pin(async move {
++            let session: Arc<dyn CodeModeSession> = Arc::new(CodeModeService);
++            Ok(session)
++        })
++    }
++}
++
++/// Stub code-mode service. Every operation returns an "unavailable on iOS"
++/// error. `is_alive` returns `false` so callers treat the session as dead.
++pub struct CodeModeService;
++
++impl CodeModeService {
++    pub fn new() -> Self {
++        Self
++    }
++
++    pub fn with_delegate(_delegate: Arc<dyn CodeModeSessionDelegate>) -> Self {
++        Self
++    }
++}
++
++impl Default for CodeModeService {
++    fn default() -> Self {
++        Self::new()
++    }
++}
++
++impl CodeModeSession for CodeModeService {
++    fn is_alive(&self) -> bool {
++        false
++    }
++
++    fn execute<'a>(
++        &'a self,
++        _request: ExecuteRequest,
++    ) -> CodeModeSessionResultFuture<'a, StartedCell> {
++        Box::pin(async { Err(UNAVAILABLE.to_string()) })
++    }
++
++    fn wait<'a>(
++        &'a self,
++        _request: WaitRequest,
++    ) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
++        Box::pin(async { Err(UNAVAILABLE.to_string()) })
++    }
++
++    fn terminate<'a>(
++        &'a self,
++        _cell_id: CellId,
++    ) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
++        Box::pin(async { Err(UNAVAILABLE.to_string()) })
++    }
++
++    fn shutdown<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {
++        Box::pin(async { Ok(()) })
++    }
++}
+-- 
+2.39.1
+
