@@ -119,9 +119,22 @@ jobs:
           echo "AWS_LC_SYS_NO_JITTER_ENTROPY=1" >> "$GITHUB_ENV"
           echo "AWS_LC_SYS_NO_JITTER_ENTROPY_aarch64_apple_ios=1" >> "$GITHUB_ENV"
 
-          # Linker flags: -ObjC for objc2 categories, isysroot to point at
-          # the iOS SDK (cargo's default linker driver needs this for cross).
-          echo "RUSTFLAGS=-C link-arg=-ObjC -C link-arg=-isysroot -C link-arg=$SDK -C link-arg=-platform_version -C link-arg=ios -C link-arg=16.0 -C link-arg=16.0" >> "$GITHUB_ENV"
+          # Linker config for the final Rust binary link step.
+          #
+          # rustc's default linker driver is `cc` resolved from PATH, which on
+          # the runner may be a non-Apple clang that does NOT understand the
+          # Apple ld64 flag `-platform_version`. So we:
+          #   1. Force the linker driver to be the Xcode Apple-clang we found
+          #      above (`-C linker=$CC`).
+          #   2. Pass `-ObjC` so objc2 categories link (patch 002 also emits
+          #      this from cli/build.rs; harmless to have both).
+          #   3. Pass `-isysroot $SDK` so the driver finds the iOS SDK.
+          # We deliberately do NOT pass `-platform_version` ourselves: rustc's
+          # aarch64-apple-ios target spec already emits the correct platform
+          # version (driven by IPHONEOS_DEPLOYMENT_TARGET above), and splitting
+          # `-platform_version ios 16.0 16.0` across separate `-C link-arg=`
+          # tokens breaks non-Apple clangs (E: unknown argument).
+          echo "RUSTFLAGS=-C linker=$CC -C link-arg=-ObjC -C link-arg=-isysroot -C link-arg=$SDK" >> "$GITHUB_ENV"
           echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
 
       - name: Generate CMake toolchain file for aws-lc-sys
