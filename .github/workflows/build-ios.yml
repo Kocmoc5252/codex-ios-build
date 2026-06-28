@@ -50,6 +50,16 @@ jobs:
         with:
           targets: aarch64-apple-ios
 
+      - name: Verify iOS target is installed
+        run: |
+          set -euo pipefail
+          rustup target list --installed
+          # Belt-and-suspenders: dtolnay/rust-toolchain sometimes installs the
+          # target under a different toolchain than the one cargo resolves to.
+          # Force it on the active default so `cargo build --target` finds `core`.
+          rustup target add aarch64-apple-ios
+          rustc --print target-libdir --target aarch64-apple-ios
+
       - name: Install ldid (for ad-hoc signing)
         run: |
           set -euo pipefail
