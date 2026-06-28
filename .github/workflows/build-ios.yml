@@ -59,8 +59,12 @@ jobs:
           # that pinned toolchain — which does NOT have aarch64-apple-ios
           # installed, causing E0463 "can't find crate for `core`".
           # Fix: install that exact channel and add the iOS target to it.
-          PINNED="$(grep -E '^channel' codex-src/codex-rs/rust-toolchain.toml | head -1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')"
-          echo "Pinned channel in rust-toolchain.toml: $PINNED"
+          # Parse `channel = "1.95.0"` portably: grab the channel line, pull
+          # out the first double-quoted token, strip the quotes.
+          CHANNEL_LINE="$(grep -E '^[[:space:]]*channel[[:space:]]*=' codex-src/codex-rs/rust-toolchain.toml | head -1)"
+          PINNED="$(printf '%s\n' "$CHANNEL_LINE" | grep -oE '"[^"]+"' | head -1 | tr -d '"')"
+          echo "Pinned channel in rust-toolchain.toml: '$PINNED'"
+          test -n "$PINNED"
           rustup toolchain install "$PINNED" \
             --component rust-src \
             --target aarch64-apple-ios
