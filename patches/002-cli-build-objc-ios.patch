@@ -1,6 +1,6 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: iOS jailbreak packaging
-Date: Fri, 28 Jun 2026 00:00:00 +0000
+From 8cf2de4f262091bea33ceb9e44aa5c86199af4cc Mon Sep 17 00:00:00 2001
+From: ios <ios@local>
+Date: Sun, 28 Jun 2026 22:14:56 +0300
 Subject: [PATCH] cli/build.rs: emit -ObjC on iOS too
 
 The `-ObjC` linker flag is needed so the objc2 categories from
@@ -8,14 +8,27 @@ The `-ObjC` linker flag is needed so the objc2 categories from
 `target_os = "macos"`, but the same flag is required for the
 `aarch64-apple-ios` build.
 
+The `.as_deref()` call borrows from the `Result<String, _>` returned
+by `std::env::var`, so the `Result` must live in its own `let` binding
+before being dereferenced; otherwise the borrow outlives the temporary
+(E0716).
+
+---
+ codex-rs/cli/build.rs | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
 diff --git a/codex-rs/cli/build.rs b/codex-rs/cli/build.rs
+index abccc48..b918a74 100644
 --- a/codex-rs/cli/build.rs
 +++ b/codex-rs/cli/build.rs
-@@ -1,5 +1,6 @@
+@@ -1,5 +1,7 @@
  fn main() {
 -    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
-+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").as_deref();
++    let target_os = std::env::var("CARGO_CFG_TARGET_OS");
++    let target_os = target_os.as_deref();
 +    if target_os == Ok("macos") || target_os == Ok("ios") {
          println!("cargo:rustc-link-arg=-ObjC");
      }
  }
+--
+2.39.1
