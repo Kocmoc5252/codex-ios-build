@@ -45,30 +45,31 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-version
           xcrun --sdk iphoneos --show-sdk-path
 
-      - name: Install Rust + iOS target
+      - name: Install Rust (stable) + iOS target
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios
           components: rust-src
 
-      - name: Verify iOS target is installed
+      - name: Install pinned toolchain from codex-rs/rust-toolchain.toml + iOS target
         run: |
           set -euo pipefail
-          echo "--- which rustc/cargo ---"
-          which rustc cargo rustup
-          echo "--- active toolchain ---"
+          # codex-rs ships a rust-toolchain.toml pinning channel = "1.95.0".
+          # When cargo runs inside codex-src/codex-rs, rustup auto-switches to
+          # that pinned toolchain — which does NOT have aarch64-apple-ios
+          # installed, causing E0463 "can't find crate for `core`".
+          # Fix: install that exact channel and add the iOS target to it.
+          PINNED="$(grep -E '^channel' codex-src/codex-rs/rust-toolchain.toml | head -1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')"
+          echo "Pinned channel in rust-toolchain.toml: $PINNED"
+          rustup toolchain install "$PINNED" \
+            --component rust-src \
+            --target aarch64-apple-ios
+          echo "--- rustup show (post install) ---"
           rustup show
-          echo "--- installed targets ---"
-          rustup target list --installed
-          # Belt-and-suspenders: dtolnay/rust-toolchain sometimes installs the
-          # target under a different toolchain than the one cargo resolves to.
-          # Force it on the active default so `cargo build --target` finds `core`.
-          rustup target add aarch64-apple-ios
-          echo "--- after explicit add ---"
-          rustup target list --installed
-          # This MUST print a real path under ~/.rustup/toolchains/.../lib/rustlib/aarch64-apple-ios/lib
-          # If it errors, the target std is genuinely missing and cargo will fail with E0463.
-          rustc --print target-libdir --target aarch64-apple-ios
+          echo "--- rustup toolchain list ---"
+          rustup toolchain list
+          # Confirm the pinned toolchain can see the iOS std.
+          rustc "+$PINNED" --print target-libdir --target aarch64-apple-ios
 
       - name: Install ldid (for ad-hoc signing)
         run: |
@@ -143,11 +144,12 @@ jobs:
           which cargo rustc
           cargo --version
           rustc --version
-          echo "--- target-libdir for aarch64-apple-ios ---"
+          # Inside codex-rs the rust-toolchain.toml override applies; show what
+          # rustup resolves to here so we can confirm the iOS target is present.
+          echo "--- rustup show (inside codex-rs) ---"
+          rustup show
+          echo "--- target-libdir for aarch64-apple-ios (resolved toolchain) ---"
           rustc --print target-libdir --target aarch64-apple-ios || true
-          echo "--- RUSTUP_HOME / CARGO_HOME ---"
-          echo "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}"
-          echo "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}"
           cargo build \
             --target aarch64-apple-ios \
             --release \
