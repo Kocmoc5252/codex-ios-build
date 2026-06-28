@@ -1,0 +1,25 @@
+From bbf943f1799cb67dbd2f3328ac120209944f7b90 Mon Sep 17 00:00:00 2001
+From: ios <ios@local>
+Date: Sun, 28 Jun 2026 21:46:57 +0300
+Subject: [PATCH] process-hardening: define SET_RLIMIT_CORE_FAILED_EXIT_CODE on
+ iOS
+
+---
+ codex-rs/process-hardening/src/lib.rs | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/codex-rs/process-hardening/src/lib.rs b/codex-rs/process-hardening/src/lib.rs
+index f500e15..4c96985 100644
+--- a/codex-rs/process-hardening/src/lib.rs
++++ b/codex-rs/process-hardening/src/lib.rs
+@@ -34,6 +34,7 @@ const PTRACE_DENY_ATTACH_FAILED_EXIT_CODE: i32 = 6;
+     target_os = "linux",
+     target_os = "android",
+     target_os = "macos",
++    target_os = "ios",
+     target_os = "freebsd",
+     target_os = "netbsd",
+     target_os = "openbsd"
+-- 
+2.39.1
+
